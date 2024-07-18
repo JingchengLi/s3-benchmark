@@ -6,10 +6,6 @@ import (
 	"encoding/csv"
 	"flag"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/external"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/schollz/progressbar/v2"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -17,6 +13,11 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/external"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/schollz/progressbar/v2"
 )
 
 // represents the duration from making an S3 GetObject request to getting the first byte and last byte
@@ -51,6 +52,9 @@ type benchmark struct {
 // absolute limits
 const maxPayload = 18
 const maxThreads = 64
+
+// prefix for the s3 key
+var prefix string = "";
 
 // default settings
 const defaultRegion = "us-west-2"
@@ -119,7 +123,7 @@ func main() {
 	runBenchmark()
 
 	// remove the objects uploaded to S3 for this test (but doesn't remove the bucket)
-	cleanup()
+	// cleanup()
 }
 
 func parseFlags() {
@@ -136,6 +140,7 @@ func parseFlags() {
 	cleanupArg := flag.Bool("cleanup", false, "Cleans all the objects uploaded to S3 for this test.")
 	csvResultsArg := flag.String("upload-csv", "", "Uploads the test results to S3 as a CSV file.")
 	createBucketArg := flag.Bool("create-bucket", true, "Create the bucket")
+	prefixArg := flag.String("prefix", "", "Prefix for the s3 key")
 	
 	// parse the arguments and set all the global variables accordingly
 	flag.Parse()
@@ -160,6 +165,7 @@ func parseFlags() {
 	cleanupOnly = *cleanupArg
 	csvResults = *csvResultsArg
 	createBucket = *createBucketArg
+	prefix = *prefixArg
 
 	if payloadsMin > payloadsMax {
 		payloadsMin = payloadsMax
@@ -255,8 +261,10 @@ func setup() {
 		if p < payloadsMin {
 			continue
 		}
+		// print p
+		fmt.Printf("p:%v\n", p)
 
-		fmt.Printf("Uploading \033[1;33m%-s\033[0m objects\n", byteFormat(float64(objectSize)))
+		fmt.Printf("Uploading \033[1;33m%-s\033[0m xxx objects\n", byteFormat(float64(objectSize)))
 
 		// create a progress bar
 		bar := progressbar.NewOptions(threadsMax-1, progressbar.OptionSetRenderBlankState(true))
@@ -267,7 +275,7 @@ func setup() {
 			_ = bar.Add(1)
 
 			// generate an S3 key from the sha hash of the hostname, thread index, and object size
-			key := generateS3Key(hostname, t, objectSize)
+			key := generateS3Key(prefix, hostname, t, objectSize)
 
 			// do a HeadObject request to avoid uploading the object if it already exists from a previous test run
 			headReq := s3Client.HeadObjectRequest(&s3.HeadObjectInput{
@@ -374,6 +382,7 @@ func runBenchmark() {
 func execTest(threadCount int, payloadSize uint64, runNumber int, csvRecords [][]string) [][]string {
 	// this overrides the sample count on small hosts that can get overwhelmed by a large throughput
 	samples := getTargetSampleCount(threadCount, samples)
+	fmt.Printf("samples:%v\n", samples)
 
 	// a channel to submit the test tasks
 	testTasks := make(chan int, threadCount)
@@ -386,7 +395,7 @@ func execTest(threadCount int, payloadSize uint64, runNumber int, csvRecords [][
 		go func(o int, tasks <-chan int, results chan<- latency) {
 			for range tasks {
 				// generate an S3 key from the sha hash of the hostname, thread index, and object size
-				key := generateS3Key(hostname, o, payloadSize)
+				key := generateS3Key(prefix, hostname, o, payloadSize)
 
 				// start the timer to measure the first byte and last byte latencies
 				latencyTimer := time.Now()
@@ -558,10 +567,16 @@ func printHeader(objectSize uint64) {
 }
 
 // generates an S3 key from the sha hash of the hostname, thread index, and object size
-func generateS3Key(host string, threadIndex int, payloadSize uint64) string {
+func generateS3Key(prefix string, host string, threadIndex int, payloadSize uint64) string {
 	keyHash := sha1.Sum([]byte(fmt.Sprintf("%s-%03d-%012d", host, threadIndex, payloadSize)))
-	key := fmt.Sprintf("%x", keyHash)
-	return key
+	if (prefix != "") {
+		// key := fmt.Sprintf("%s/%x", prefix, keyHash)
+		key := fmt.Sprintf("%s%x", prefix, keyHash)
+		return key
+	} else {
+		key := fmt.Sprintf("%x", keyHash)
+		return key
+	}
 }
 
 // cleans up the objects uploaded to S3 for this test (but doesn't remove the bucket)
@@ -587,7 +602,7 @@ func cleanup() {
 			_ = bar.Add(1)
 
 			// generate an S3 key from the sha hash of the hostname, thread index, and object size
-			key := generateS3Key(hostname, t, payloadSize)
+			key := generateS3Key(prefix, hostname, t, payloadSize)
 
 			// make a DeleteObject request
 			headReq := s3Client.DeleteObjectRequest(&s3.DeleteObjectInput{
@@ -697,12 +712,12 @@ func payloadSizeGenerator() func() uint64 {
 
 // adjust the sample count for small instances and for low thread counts (so that the test doesn't take forever)
 func getTargetSampleCount(threads int, tasks int) int {
-	if instanceType == "" {
-		return minimumOf(50, tasks)
-	}
-	if !strings.Contains(instanceType, "xlarge") && !strings.Contains(instanceType, "metal") {
-		return minimumOf(50, tasks)
-	}
+	// if instanceType == "" {
+	// 	return minimumOf(50, tasks)
+	// }
+	// if !strings.Contains(instanceType, "xlarge") && !strings.Contains(instanceType, "metal") {
+	// 	return minimumOf(50, tasks)
+	// }
 	if threads <= 4 {
 		return minimumOf(100, tasks)
 	}
